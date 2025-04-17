@@ -1,7 +1,9 @@
 import customtkinter as ctk
 from PIL import Image
+from config import *
+from system_info import SystemInfo
 import platform
-import psutil
+import psutil # Already imported, needed for service check
 import socket
 import requests
 import json
@@ -26,61 +28,18 @@ try:
     _winreg_available = True
 except ImportError:
      _winreg_available = False
-# Windows Update Agent COM API (for pending updates)
+# Windows Update Agent COM API & COM utilities
 try:
     import win32com.client
+    import pythoncom # Needed for CoInitialize/CoUninitialize
     _wuapi_available = True
 except ImportError:
     _wuapi_available = False
+    # Define pythoncom as None if import fails to avoid NameError later
+    pythoncom = None
 
-# --- Configuration ---
-APP_NAME = "Win11 Readiness Check"
-LOGO_FILENAME = "logo.png"
-# --- !!! REPLACE WITH YOUR ACTUAL API ENDPOINT !!! ---
-API_ENDPOINT_URL = "YOUR_API_ENDPOINT_HERE"
-# --- !!! REPLACE WITH YOUR SUPPORT PHONE NUMBER !!! ---
-SUPPORT_PHONE_NUMBER = "1-800-555-HELP"
-# --- End Configuration ---
 
 gui_queue = queue.Queue()
-
-# --- Data Class ---
-class SystemInfo:
-    """ Holds all collected system information with default values. """
-    def __init__(self):
-        # User Input
-        self.assessment_id = "Not Provided" # Added field for user ID
-        # Basic Info
-        self.hostname = "Undetermined"
-        self.os_platform = "Undetermined"
-        self.os_version = "Undetermined"
-        self.os_release = "Undetermined"
-        self.architecture = "Undetermined"
-        self.processor = "Undetermined"
-        # Timestamps
-        self.timestamp_utc = "Undetermined"
-        self.timestamp_local = "Undetermined"
-        self.timezone_name = "Undetermined"
-        self.timezone_offset_utc = "Undetermined"
-        # Hardware Info
-        self.ram_total_gb = 0.0
-        self.disk_total_gb = 0.0
-        self.disk_free_gb = 0.0
-        # WMI Dependent Info
-        self.tpm_present = "Check Not Run"
-        self.tpm_version = "Check Not Run"
-        self.tpm_enabled = "Check Not Run"
-        self.secure_boot_enabled = "Check Not Run"
-        self.graphics_card = "Check Not Run"
-        self.wddm_version = "Check Not Run"
-        # Windows Update Info
-        self.pending_updates_count = -1 # Added field, -1 indicates check failed/not run
-        # Status/Error fields
-        self.collection_error = None
-
-    def to_dict(self):
-        """ Convert the object's attributes to a dictionary for serialization. """
-        return self.__dict__
 
 # --- Helper Functions ---
 
@@ -100,11 +59,41 @@ def show_final_message(message_type, message):
 
 # --- Data Collection Functions ---
 
+def check_wmi_service() -> (bool, str):
+    """ Checks if the WMI service ('Winmgmt') is running. """
+    try:
+        service = psutil.win_service_get('Winmgmt')
+        status = service.status()
+        if status == 'running':
+            return True, "Running"
+        else:
+            return False, f"Service status: {status}"
+    except psutil.NoSuchProcess:
+        return False, "Service not found (NoSuchProcess)"
+    except Exception as e:
+        return False, f"Error checking service: {e}"
+
 def populate_wmi_info(info: SystemInfo):
     """ Attempts to get WMI info and updates the SystemInfo object. """
+    update_status("Checking WMI Service Status...")
+    wmi_service_ok, wmi_service_status = check_wmi_service()
+    if not wmi_service_ok:
+        error_msg = f"WMI Service ('Winmgmt') not running or inaccessible. Status: {wmi_service_status}"
+        update_status(error_msg)
+        print(error_msg)
+        info.wmi_error_details = error_msg
+        # Set all WMI fields to indicate service error
+        info.tpm_present = "WMI Service Error"
+        info.tpm_version = "WMI Service Error"
+        info.tpm_enabled = "WMI Service Error"
+        info.secure_boot_enabled = "WMI Service Error"
+        info.graphics_card = "WMI Service Error"
+        info.wddm_version = "WMI Service Error"
+        return # Stop WMI checks if service is down
+
     if not _wmi_available:
         update_status("WMI module not found. Skipping WMI checks.")
-        print("Python WMI module not installed (pip install wmi)")
+        # ... (rest of module missing code remains same) ...
         info.tpm_present = "WMI Module Missing"
         info.tpm_version = "WMI Module Missing"
         info.tpm_enabled = "WMI Module Missing"
@@ -114,13 +103,19 @@ def populate_wmi_info(info: SystemInfo):
         return
 
     permission_error_flag = "(Permissions?)"
+    wmi_errors = [] # Collect specific errors
+
     try:
         c = wmi.WMI()
     except Exception as e:
-        update_status(f"WMI initialization failed: {e}. Skipping WMI checks.")
-        print(f"WMI failed to initialize: {e}")
+        error_msg = f"WMI initialization failed: {type(e).__name__}: {e}"
+        update_status(error_msg)
+        print(error_msg)
+        info.wmi_error_details = error_msg
+        # Set all WMI fields to indicate init error
         info.tpm_present = f"WMI Init Failed {permission_error_flag}"
-        # ... (set other WMI fields to Init Failed) ...
+        info.tpm_version = f"WMI Init Failed {permission_error_flag}"
+        info.tpm_enabled = f"WMI Init Failed {permission_error_flag}"
         info.secure_boot_enabled = f"WMI Init Failed {permission_error_flag}"
         info.graphics_card = f"WMI Init Failed {permission_error_flag}"
         info.wddm_version = f"WMI Init Failed {permission_error_flag}"
@@ -134,6 +129,7 @@ def populate_wmi_info(info: SystemInfo):
     try:
         tpm_info_list = c.Win32_Tpm()
         if tpm_info_list:
+            # ... (TPM logic remains the same) ...
             tpm_info = tpm_info_list[0]
             info.tpm_present = True
             try: info.tpm_version = tpm_info.SpecVersion or "Unknown"
@@ -143,14 +139,18 @@ def populate_wmi_info(info: SystemInfo):
                 if enabled is not None: info.tpm_enabled = bool(enabled)
                 else: info.tpm_enabled = f"Check Failed {permission_error_flag}"
             except Exception as e_detail:
-                print(f"WMI TPM status check failed: {e_detail}")
+                err = f"TPM Status Check Failed: {type(e_detail).__name__}: {e_detail}"
+                print(err)
+                wmi_errors.append(err)
                 info.tpm_enabled = f"Check Failed {permission_error_flag}"
         else:
             info.tpm_present = False
             info.tpm_version = "N/A"
             info.tpm_enabled = "N/A"
     except Exception as e:
-        print(f"WMI TPM query failed: {e}")
+        err = f"TPM Query Failed: {type(e).__name__}: {e}"
+        print(err)
+        wmi_errors.append(err)
         info.tpm_present = f"Query Failed {permission_error_flag}"
         info.tpm_version = f"Query Failed {permission_error_flag}"
         info.tpm_enabled = f"Query Failed {permission_error_flag}"
@@ -159,6 +159,7 @@ def populate_wmi_info(info: SystemInfo):
     update_status("Querying WMI for Secure Boot...")
     info.secure_boot_enabled = "Undetermined"
     try:
+        # ... (Secure Boot WMI logic remains the same) ...
         sb_info_list = c.Win32_SecureBoot()
         if sb_info_list:
              if hasattr(sb_info_list[0], 'SecureBootEnabled'): info.secure_boot_enabled = bool(sb_info_list[0].SecureBootEnabled)
@@ -166,44 +167,61 @@ def populate_wmi_info(info: SystemInfo):
              else: info.secure_boot_enabled = "Property Not Found"
         else: info.secure_boot_enabled = "Query Failed (Class Not Found?)"
     except Exception as e:
-        print(f"WMI Secure Boot query failed: {e}")
+        err = f"Secure Boot WMI Query Failed: {type(e).__name__}: {e}"
+        print(err)
+        wmi_errors.append(err)
+        # Try registry fallback
         if _winreg_available:
             try:
+                # ... (Registry logic remains the same) ...
                 key_path = r"SYSTEM\CurrentControlSet\Control\SecureBoot\State"
                 reg_key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_READ)
                 value, _ = winreg.QueryValueEx(reg_key, "UEFISecureBootEnabled")
                 winreg.CloseKey(reg_key)
-                info.secure_boot_enabled = bool(value)
+                info.secure_boot_enabled = bool(value) # Overwrite WMI failure if registry works
             except FileNotFoundError: info.secure_boot_enabled = "Check Failed (Key Missing)"
             except PermissionError: info.secure_boot_enabled = f"Check Failed {permission_error_flag}"
             except Exception as reg_e:
-                print(f"Registry Secure Boot check failed: {reg_e}")
+                err_reg = f"Secure Boot Registry Check Failed: {type(reg_e).__name__}: {reg_e}"
+                print(err_reg)
+                wmi_errors.append(err_reg) # Add registry error too
                 info.secure_boot_enabled = f"Check Failed {permission_error_flag}"
         else: info.secure_boot_enabled = f"Check Failed (WMI Error & WinReg Missing)"
+
 
     # --- Graphics Check ---
     update_status("Querying WMI for Graphics...")
     info.graphics_card = "Undetermined"
     info.wddm_version = "Undetermined"
     try:
+        # ... (Graphics logic remains the same) ...
         gpu_info = c.Win32_VideoController()[0]
         info.graphics_card = gpu_info.Name
         info.wddm_version = f"Driver: {gpu_info.DriverVersion}"
     except Exception as e:
-        print(f"WMI Graphics query failed: {e}")
+        err = f"Graphics Query Failed: {type(e).__name__}: {e}"
+        print(err)
+        wmi_errors.append(err)
         info.graphics_card = "Query Failed"
         info.wddm_version = "Query Failed"
+
+    # Store collected WMI errors if any occurred
+    if wmi_errors:
+        info.wmi_error_details = "; ".join(wmi_errors)
 
 
 def check_pending_updates(info: SystemInfo):
     """ Checks for pending Windows Updates using WUA API. """
     update_status("Checking for pending Windows Updates...")
-    info.pending_updates_count = -1 # Default to error/check failed
+    info.pending_updates_count = -1 # Default to general error
+    info.update_check_error_details = None # Clear previous errors
 
     if not _wuapi_available:
+        # ... (Module missing logic remains the same) ...
         update_status("Windows Update check skipped: pywin32 module missing.")
         print("Windows Update check skipped: pywin32 module missing (pip install pywin32).")
-        info.pending_updates_count = -2 # Specific code for module missing
+        info.pending_updates_count = -2
+        info.update_check_error_details = "pywin32 module not found"
         return
 
     try:
@@ -211,36 +229,34 @@ def check_pending_updates(info: SystemInfo):
         update_session = win32com.client.Dispatch("Microsoft.Update.Session")
         update_searcher = update_session.CreateUpdateSearcher()
 
-        # Search criteria: Updates that are not installed and not hidden
-        # May require admin rights for a comprehensive search
+        # Search criteria
         search_criteria = "IsInstalled=0 and IsHidden=0 and Type='Software'"
         update_status("Searching for available updates (this may take a moment)...")
         search_result = update_searcher.Search(search_criteria)
-        update_status(f"Found {search_result.Updates.Count} available updates.")
-
-        # Count updates ready for installation (already downloaded)
-        # Note: This is a simplified check. A full check might look at specific
-        # properties like IsDownloaded, IsMandatory, RebootRequired etc.
-        # For simplicity, we count all applicable updates found by the search.
-        # A count > 0 implies action might be needed.
-        info.pending_updates_count = search_result.Updates.Count
+        count = search_result.Updates.Count
+        update_status(f"Found {count} applicable updates.")
+        info.pending_updates_count = count
 
     except pythoncom.com_error as com_err:
-         # Handle COM errors (e.g., service not running, access denied)
-         print(f"Windows Update check failed (COM Error): {com_err}")
-         update_status(f"Windows Update check failed (COM Error: {com_err.hresult})")
+         err_msg = f"COM Error HRESULT={com_err.hresult}: {com_err}"
+         print(f"Windows Update check failed (COM Error): {err_msg}")
+         update_status(f"Windows Update check failed (COM Error)")
          info.pending_updates_count = -3 # Specific code for COM error
+         info.update_check_error_details = err_msg
     except Exception as e:
-        print(f"Windows Update check failed: {e}")
+        err_msg = f"{type(e).__name__}: {e}"
+        print(f"Windows Update check failed: {err_msg}")
         update_status(f"Windows Update check failed: {e}")
         info.pending_updates_count = -1 # General error
+        info.update_check_error_details = err_msg
 
 def collect_system_data(assessment_id: str) -> SystemInfo:
     """ Collects system information and returns a populated SystemInfo object. """
     info = SystemInfo()
-    info.assessment_id = assessment_id # Store the user ID
+    info.assessment_id = assessment_id
 
     try:
+        # ... (Basic info, Timestamps, RAM, Disk collection remains the same) ...
         update_status("Collecting basic system info...")
         info.hostname = socket.gethostname()
         info.os_platform = platform.system()
@@ -249,7 +265,6 @@ def collect_system_data(assessment_id: str) -> SystemInfo:
         info.architecture = platform.machine()
         info.processor = platform.processor()
 
-        # Timestamps
         current_time_utc = time.time()
         current_datetime_local = time.localtime(current_time_utc)
         timezone_name = time.tzname[current_datetime_local.tm_isdst]
@@ -277,11 +292,12 @@ def collect_system_data(assessment_id: str) -> SystemInfo:
             info.disk_total_gb = -1.0
             info.disk_free_gb = -1.0
 
+
         # --- WMI Dependent Info ---
         populate_wmi_info(info)
 
         # --- Windows Update Check ---
-        check_pending_updates(info) # Call the new check
+        check_pending_updates(info)
 
         update_status("Data collection complete.")
 
@@ -293,7 +309,7 @@ def collect_system_data(assessment_id: str) -> SystemInfo:
     return info
 
 # --- Data Handling Functions ---
-
+# (send_data_to_api and save_data_to_csv remain the same)
 def send_data_to_api(info: SystemInfo):
     """ Sends collected data from SystemInfo object to the API endpoint """
     update_status(f"Sending data for {info.hostname} (Assessment ID: {info.assessment_id})...")
@@ -337,17 +353,30 @@ def save_data_to_csv(info: SystemInfo):
 
 # --- Background Task ---
 
-def worker_thread_task(assessment_id: str): # Accept assessment_id
+def worker_thread_task(assessment_id: str):
     """ The main task performed in the background thread """
     system_info = None
+    coinitialized = False # Flag to track COM initialization
     try:
-        system_info = collect_system_data(assessment_id) # Pass assessment_id
+        # --- Initialize COM for this thread ---
+        if _wuapi_available and pythoncom:
+            try:
+                pythoncom.CoInitialize()
+                coinitialized = True
+            except Exception as com_init_e:
+                print(f"Failed to CoInitialize COM for thread: {com_init_e}")
+                update_status("Error initializing COM for Update check.")
+                # We might still proceed, but update check will likely fail
 
+        system_info = collect_system_data(assessment_id)
+
+        # Check for major collection errors first
         if system_info.collection_error:
              show_final_message("ERROR", f"A critical error occurred during data collection: {system_info.collection_error}\nPlease call us at {SUPPORT_PHONE_NUMBER}.")
              save_data_to_csv(system_info)
-             return
+             return # Stop processing
 
+        # Send data if collection was okay (even if some checks failed)
         success, status_msg, hostname = send_data_to_api(system_info)
 
         if success:
@@ -357,16 +386,24 @@ def worker_thread_task(assessment_id: str): # Accept assessment_id
             save_data_to_csv(system_info)
 
     except Exception as e:
+        # Catch unexpected errors in the thread task itself
         print(f"Critical error in worker thread: {e}")
         update_status(f"Critical error: {e}")
         show_final_message("ERROR", f"A critical error occurred: {e}\nPlease call us at {SUPPORT_PHONE_NUMBER}.")
-        if system_info: save_data_to_csv(system_info)
+        if system_info: save_data_to_csv(system_info) # Save data if available
     finally:
+        # --- Uninitialize COM for this thread ---
+        if coinitialized and pythoncom:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception as com_uninit_e:
+                print(f"Failed to CoUninitialize COM for thread: {com_uninit_e}")
+        # Signal GUI that work is done
         gui_queue.put("TASK_COMPLETE")
 
 
-# --- GUI Class (Modified for ID Prompt) ---
-
+# --- GUI Class ---
+# (App class remains the same as the previous version with the ID prompt)
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -426,7 +463,7 @@ class App(ctk.CTk):
 
     def prompt_for_assessment_id(self):
         """ Prompts the user for an ID using CTkInputDialog """
-        dialog = ctk.CTkInputDialog(text="Please enter a Assessment ID:", title="Enter ID")
+        dialog = ctk.CTkInputDialog(text="Please enter an assessment ID:", title="Enter ID")
         # Center the dialog (approximation)
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
@@ -440,7 +477,7 @@ class App(ctk.CTk):
 
         if entered_id:
             self.assessment_id = entered_id
-            print(f"Assessment ID: {self.assessment_id}")
+            print(f"User entered ID: {self.assessment_id}")
         else:
             self.assessment_id = "Not Provided" # Handle cancel or empty input
             print("User cancelled or provided no ID.")
@@ -477,10 +514,8 @@ class App(ctk.CTk):
                 self.status_label.configure(text=message[len("STATUS:"):].strip())
             elif message.startswith("SUCCESS:"):
                 self.show_popup("Success", message[len("SUCCESS:"):].strip(), exit_on_close=True)
-                # self.after(5000, self.on_closing) # Auto-close handled by popup button now
             elif message.startswith("ERROR:"):
                 self.show_popup("Error", message[len("ERROR:"):].strip(), error=True, exit_on_close=True)
-                # self.after(8000, self.on_closing) # Auto-close handled by popup button now
             elif message == "TASK_COMPLETE":
                 pass
 
@@ -519,10 +554,8 @@ class App(ctk.CTk):
 
         # --- Modified Button Action ---
         if exit_on_close:
-            # If it's a final message, OK button closes the whole app
             ok_button = ctk.CTkButton(button_frame, text="OK", width=80, command=self.on_closing)
         else:
-            # Otherwise, just close the popup
             ok_button = ctk.CTkButton(button_frame, text="OK", width=80, command=popup.destroy)
 
         ok_button.pack()
@@ -534,22 +567,9 @@ class App(ctk.CTk):
 
 # --- Main Execution ---
 if __name__ == "__main__":
-    # Need to initialize COM library for the WUA API if running in threads
-    # Do this once at the start if pywin32 is available
-    if _wuapi_available:
-        try:
-            import pythoncom
-            pythoncom.CoInitialize()
-            # Note: Ideally CoUninitialize should be called on exit,
-            # but in a simple script like this, it might be omitted.
-            # For robustness, consider adding it to on_closing or using atexit.
-        except Exception as e:
-            print(f"Failed to initialize COM: {e}. Update check might fail.")
-
-
+    # Removed CoInitialize from main thread - it's now handled per-thread
     ctk.set_appearance_mode("System")
     ctk.set_default_color_theme("blue")
 
     app = App()
     app.mainloop()
-
