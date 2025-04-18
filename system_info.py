@@ -23,7 +23,7 @@ class SystemInfo:
         self.timezone_offset_utc = "Undetermined"
         # Hardware Info
         self.ram_total_gb = 0.0
-        self.ram_speed = 0
+        self.ram_speed_mhz = 0
         self.ram_type = "Undetermined"
         self.disk_total_gb = 0.0
         self.disk_free_gb = 0.0

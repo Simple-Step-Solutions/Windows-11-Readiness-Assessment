@@ -299,15 +299,14 @@ def populate_wmi_info(info: SystemInfo):
 
     # --- RAM Speed Check (using default connection 'c') ---
     update_status("Querying WMI for RAM Speed...")
-    info.ram_speed = "Undetermined"
+    info.ram_speed_mhz = "Undetermined"
     try:
         c = wmi.WMI()
         speed = None
-        speed_unit = "MHz"  # Default unit
         for mem in c.Win32_PhysicalMemory():
             speed = mem.Speed
             if speed is not None:
-                info.ram_speed = f"{speed}{speed_unit}"
+                info.ram_speed_mhz = speed
     except Exception as e:
         err = f"RAM Type Query Failed: {type(e).__name__}: {e}"
         print(err); wmi_errors.append(err)
