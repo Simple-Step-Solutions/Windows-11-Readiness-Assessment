@@ -36,6 +36,7 @@ jobs:
       - name: Build EXE with PyInstaller
         run: |
           pyinstaller --noconfirm --onefile --windowed `
+            --icon=logo.ico `
             --hidden-import tkinter `
             --hidden-import win32timezone `
             --hidden-import win32com `
