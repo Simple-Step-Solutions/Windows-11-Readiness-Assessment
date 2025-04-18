@@ -29,7 +29,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install
+          pip install -r requirements.txt
 
       # 4. Build the executable using PyInstaller
       #    !!! IMPORTANT: Replace 'your_script_name.py' with the actual filename of your Python script !!!
