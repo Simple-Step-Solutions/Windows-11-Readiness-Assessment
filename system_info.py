@@ -6,6 +6,7 @@ class SystemInfo:
         self.assessment_id = "Not Provided"
         # Basic Info
         self.hostname = "Undetermined"
+        self.manufacturer = "Undetermined"
         self.os_platform = "Undetermined"
         self.os_version = "Undetermined"
         self.os_release = "Undetermined"

@@ -155,7 +155,18 @@ def populate_wmi_info(info: SystemInfo):
         info.system_drive_type = f"WMI Init Failed {permission_error_flag}"
         return
 
-    # --- TPM Check (using default connection 'c') ---
+    # --- Manufacturer Check (using default connection 'c') ---
+    update_status("Querying WMI for Manufacturer...")
+    info.manufacturer = "Undetermined"
+    try:
+        info.manufacturer = c.Win32_ComputerSystem()[0].Manufacturer
+    except Exception as e:
+        err = f"Manufacturer Query Failed: {type(e).__name__}: {e}"
+        print(err)
+        wmi_errors.append(err)
+        info.manufacturer = f"Query Failed {permission_error_flag}"
+
+    # --- TPM Check (using tpm connection 'c_tpm') ---
     update_status("Querying WMI for TPM...")
     info.tpm_present = "Undetermined"
     info.tpm_version = "Undetermined"
@@ -188,7 +199,6 @@ def populate_wmi_info(info: SystemInfo):
         info.tpm_version = f"Query Failed {permission_error_flag}"
         info.tpm_enabled = f"Query Failed {permission_error_flag}"
 
-
     # --- Secure Boot Check (using default connection 'c') ---
     update_status("Querying WMI for Secure Boot...")
     info.secure_boot_enabled = "Undetermined"
@@ -219,7 +229,6 @@ def populate_wmi_info(info: SystemInfo):
                 wmi_errors.append(err_reg)
                 info.secure_boot_enabled = f"Check Failed {permission_error_flag}"
         else: info.secure_boot_enabled = f"Check Failed (WMI Error & WinReg Missing)"
-
 
     # --- Graphics Check (using default connection 'c') ---
     update_status("Querying WMI for Graphics...")
@@ -289,6 +298,7 @@ def populate_wmi_info(info: SystemInfo):
         info.ram_type = f"Query Failed {permission_error_flag}"
 
     # --- RAM Speed Check (using default connection 'c') ---
+    update_status("Querying WMI for RAM Speed...")
     info.ram_speed = "Undetermined"
     try:
         c = wmi.WMI()
@@ -349,7 +359,6 @@ def populate_wmi_info(info: SystemInfo):
          info.system_drive_type != "WMI Service Error": # Avoid overwriting previous errors
         # If storage connection failed earlier, reflect that
         info.system_drive_type = "WMI Storage Connect Failed"
-
 
     # Store collected WMI errors if any occurred
     if wmi_errors:
