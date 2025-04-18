@@ -43,7 +43,7 @@ jobs:
             --add-data "logo.png;." `
             --manifest "readiness_check.manifest" `
             --name "Win11ReadinessCheck" `
-            your_script_name.py # <<<!!! CHANGE THIS FILENAME !!!>>>
+            win11-readiness.py # <<<!!! CHANGE THIS FILENAME !!!>>>
 
       # 5. Create Release Tag Name
       - name: Create Release Tag Name
