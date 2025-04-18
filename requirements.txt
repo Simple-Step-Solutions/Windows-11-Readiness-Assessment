@@ -1,0 +1,7 @@
+customtkinter
+Pillow
+psutil
+requests
+wmi
+pywin32
+pyinstaller
