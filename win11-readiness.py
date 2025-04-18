@@ -1,5 +1,5 @@
 import customtkinter as ctk
-from PIL import Image
+from PIL import Image, ImageTk
 from config import *
 from system_info import SystemInfo
 import platform
@@ -309,12 +309,9 @@ def populate_wmi_info(info: SystemInfo):
             try:
                 c = wmi.WMI()
                 for drive in c.Win32_DiskDrive():
-                    print("Drive", drive)
                     for partition in c.Win32_DiskPartition(DiskIndex=drive.Index):
-                        print("Part", partition)
                         # Correctly link using the partition's index and the disk's DeviceID
                         for logical_disk in c.Win32_LogicalDisk():
-                            print("LD", logical_disk)
                             if logical_disk.DeviceID == system_drive_letter:
                                 model = drive.Model
             except wmi.x_wmi as e:
@@ -549,6 +546,25 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title(APP_NAME)
+        # Set window icon using iconphoto (requires Pillow)
+        self.app_icon = None # Keep reference if needed elsewhere, though not strictly for iconbitmap
+        try:
+            icon_path = get_resource_path(ICON_FILENAME) # Use logo.ico
+            self.iconbitmap(icon_path) # Set taskbar/window icon using ICO
+            print(f"Successfully set window icon from {icon_path}")
+        except Exception as e:
+            print(f"Error setting window icon using iconbitmap: {e}")
+            # Fallback attempt using iconphoto with PNG (less reliable)
+            try:
+                print("Attempting fallback icon using iconphoto with PNG...")
+                png_icon_path = get_resource_path(LOGO_FILENAME)
+                pil_icon = Image.open(png_icon_path)
+                self.app_icon = ImageTk.PhotoImage(pil_icon) # Need to store PhotoImage
+                self.iconphoto(True, self.app_icon)
+                print(f"Successfully set window icon using iconphoto fallback.")
+            except Exception as e_photo:
+                 print(f"Error setting window icon using iconphoto fallback: {e_photo}")
+
         self.geometry("450x200")
         self.resizable(False, False)
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
