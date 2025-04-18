@@ -41,7 +41,7 @@ jobs:
             --hidden-import win32com `
             --hidden-import win32com.client `
             --add-data "logo.png;." `
-            --manifest "readiness_check.manifest" `
+            --manifest "win11-readiness.manifest" `
             --name "Win11ReadinessCheck" `
             win11-readiness.py # <<<!!! CHANGE THIS FILENAME !!!>>>
 
