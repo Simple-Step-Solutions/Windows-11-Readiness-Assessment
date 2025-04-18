@@ -89,24 +89,42 @@ def populate_wmi_info(info: SystemInfo):
         info.secure_boot_enabled = "WMI Service Error"
         info.graphics_card = "WMI Service Error"
         info.wddm_version = "WMI Service Error"
-        return # Stop WMI checks if service is down
+        info.ram_type = "WMI Service Error"
+        info.system_drive_type = "WMI Service Error"
+        info.ram_speed = "WMI Service Error"
+        return
 
     if not _wmi_available:
         update_status("WMI module not found. Skipping WMI checks.")
-        # ... (rest of module missing code remains same) ...
         info.tpm_present = "WMI Module Missing"
         info.tpm_version = "WMI Module Missing"
         info.tpm_enabled = "WMI Module Missing"
         info.secure_boot_enabled = "WMI Module Missing"
         info.graphics_card = "WMI Module Missing"
         info.wddm_version = "WMI Module Missing"
+        info.ram_type = "WMI Module Missing"
+        info.system_drive_type = "WMI Module Missing"
+        info.ram_speed = "WMI Module Missing"
         return
 
     permission_error_flag = "(Permissions?)"
-    wmi_errors = [] # Collect specific errors
+    wmi_errors = []
 
+    # --- Open WMI Namespaces ---
     try:
+        # Default WMI connection (usually ROOT\cimv2)
         c = wmi.WMI()
+        # Connection for Storage namespace (needed for MSFT_PhysicalDisk)
+        c_storage = None
+        try:
+            # This namespace might require admin rights
+            c_storage = wmi.WMI(namespace="root/Microsoft/Windows/Storage")
+            update_status("Connected to WMI Storage namespace.")
+        except Exception as e_storage_con:
+            err = f"WMI Storage Namespace Connect Failed: {type(e_storage_con).__name__}: {e_storage_con}"
+            print(err)
+            wmi_errors.append(err)
+            info.system_drive_type = f"WMI Storage Connect Failed {permission_error_flag}"
     except Exception as e:
         error_msg = f"WMI initialization failed: {type(e).__name__}: {e}"
         update_status(error_msg)
@@ -119,9 +137,11 @@ def populate_wmi_info(info: SystemInfo):
         info.secure_boot_enabled = f"WMI Init Failed {permission_error_flag}"
         info.graphics_card = f"WMI Init Failed {permission_error_flag}"
         info.wddm_version = f"WMI Init Failed {permission_error_flag}"
+        info.ram_type = f"WMI Init Failed {permission_error_flag}"
+        info.system_drive_type = f"WMI Init Failed {permission_error_flag}"
         return
 
-    # --- TPM Check ---
+    # --- TPM Check (using default connection 'c') ---
     update_status("Querying WMI for TPM...")
     info.tpm_present = "Undetermined"
     info.tpm_version = "Undetermined"
@@ -129,7 +149,6 @@ def populate_wmi_info(info: SystemInfo):
     try:
         tpm_info_list = c.Win32_Tpm()
         if tpm_info_list:
-            # ... (TPM logic remains the same) ...
             tpm_info = tpm_info_list[0]
             info.tpm_present = True
             try: info.tpm_version = tpm_info.SpecVersion or "Unknown"
@@ -155,11 +174,11 @@ def populate_wmi_info(info: SystemInfo):
         info.tpm_version = f"Query Failed {permission_error_flag}"
         info.tpm_enabled = f"Query Failed {permission_error_flag}"
 
-    # --- Secure Boot Check ---
+
+    # --- Secure Boot Check (using default connection 'c') ---
     update_status("Querying WMI for Secure Boot...")
     info.secure_boot_enabled = "Undetermined"
     try:
-        # ... (Secure Boot WMI logic remains the same) ...
         sb_info_list = c.Win32_SecureBoot()
         if sb_info_list:
              if hasattr(sb_info_list[0], 'SecureBootEnabled'): info.secure_boot_enabled = bool(sb_info_list[0].SecureBootEnabled)
@@ -173,28 +192,26 @@ def populate_wmi_info(info: SystemInfo):
         # Try registry fallback
         if _winreg_available:
             try:
-                # ... (Registry logic remains the same) ...
                 key_path = r"SYSTEM\CurrentControlSet\Control\SecureBoot\State"
                 reg_key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_READ)
                 value, _ = winreg.QueryValueEx(reg_key, "UEFISecureBootEnabled")
                 winreg.CloseKey(reg_key)
-                info.secure_boot_enabled = bool(value) # Overwrite WMI failure if registry works
+                info.secure_boot_enabled = bool(value)
             except FileNotFoundError: info.secure_boot_enabled = "Check Failed (Key Missing)"
             except PermissionError: info.secure_boot_enabled = f"Check Failed {permission_error_flag}"
             except Exception as reg_e:
                 err_reg = f"Secure Boot Registry Check Failed: {type(reg_e).__name__}: {reg_e}"
                 print(err_reg)
-                wmi_errors.append(err_reg) # Add registry error too
+                wmi_errors.append(err_reg)
                 info.secure_boot_enabled = f"Check Failed {permission_error_flag}"
         else: info.secure_boot_enabled = f"Check Failed (WMI Error & WinReg Missing)"
 
 
-    # --- Graphics Check ---
+    # --- Graphics Check (using default connection 'c') ---
     update_status("Querying WMI for Graphics...")
     info.graphics_card = "Undetermined"
     info.wddm_version = "Undetermined"
     try:
-        # ... (Graphics logic remains the same) ...
         gpu_info = c.Win32_VideoController()[0]
         info.graphics_card = gpu_info.Name
         info.wddm_version = f"Driver: {gpu_info.DriverVersion}"
@@ -205,31 +222,147 @@ def populate_wmi_info(info: SystemInfo):
         info.graphics_card = "Query Failed"
         info.wddm_version = "Query Failed"
 
+    # --- RAM Type Check (using default connection 'c') ---
+    update_status("Querying WMI for RAM Type...")
+    info.ram_type = "Undetermined"
+    try:
+        for mem in c.Win32_PhysicalMemory():
+            smbios_memory_type = mem.SMBIOSMemoryType
+            # https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-physicalmemory
+            type_mapping = {
+                0: "Unknown",
+                1: "Other",
+                2: "DRAM",
+                3: "Synchronous DRAM",
+                4: "Cache DRAM",
+                5: "EDO",
+                6: "EDRAM",
+                7: "VRAM",
+                8: "SRAM",
+                9: "RAM",
+                10: "ROM",
+                11: "Flash",
+                12: "EEPROM",
+                13: "FEPROM",
+                14: "EPROM",
+                15: "CDRAM",
+                16: "3DRAM",
+                17: "SDRAM",
+                18: "SGRAM",
+                19: "RDRAM",
+                20: "DDR",
+                21: "DDR-2",
+                22: "BRAM",
+                23: "FB-DIMM",
+                24: "DDR3",
+                25: "FBD2",
+                26: "DDR4",
+                27: "LPDDR",
+                28: "LPDDR2",
+                29: "LPDDR3",
+                30: "LPDDR4",
+                31: "Logical non-volatile device",
+                32: "HBM (High Bandwidth Memory)",
+                33: "HBM2 (High Bandwidth Memory Generation 2)",
+                34: "DDR5",
+                35: "LPDDR5",
+                36: "HBM3 (High Bandwidth Memory Generation 3)",
+            }
+            info.ram_type = type_mapping.get(smbios_memory_type, "Undetermined")
+    except Exception as e:
+        err = f"RAM Type Query Failed: {type(e).__name__}: {e}"
+        print(err); wmi_errors.append(err)
+        info.ram_type = f"Query Failed {permission_error_flag}"
+
+    # --- RAM Speed Check (using default connection 'c') ---
+    info.ram_speed = "Undetermined"
+    try:
+        c = wmi.WMI()
+        speed = None
+        speed_unit = "MHz"  # Default unit
+        for mem in c.Win32_PhysicalMemory():
+            speed = mem.Speed
+            if speed is not None:
+                info.ram_speed = f"{speed}{speed_unit}"
+    except Exception as e:
+        err = f"RAM Type Query Failed: {type(e).__name__}: {e}"
+        print(err); wmi_errors.append(err)
+        info.ram_type = f"Query Failed {permission_error_flag}"
+
+    # --- Drive Type Check (using storage connection 'c_storage') ---
+    update_status("Querying WMI for System Drive Type...")
+    info.system_drive_type = "Undetermined"
+    if c_storage: # Only proceed if connection to storage namespace succeeded
+        try:
+            system_drive_letter = os.getenv("SystemDrive", "C:")
+            # Query physical disks
+            # MediaType: 3=HDD, 4=SSD, 5=SCM, 0=Unspecified
+            disk_types = {3: "HDD", 4: "SSD", 5: "SCM", 0: "Unspecified"}
+
+            # Find the physical disk associated with the system drive letter
+            # This mapping can be complex. Simplified approach: check all physical disks.
+            # A robust solution might involve Win32_LogicalDiskToPartition etc.
+            # Assumption: System drive is usually on the first or primary physical disk reported.
+
+            model = None
+
+            try:
+                c = wmi.WMI()
+                for drive in c.Win32_DiskDrive():
+                    print("Drive", drive)
+                    for partition in c.Win32_DiskPartition(DiskIndex=drive.Index):
+                        print("Part", partition)
+                        # Correctly link using the partition's index and the disk's DeviceID
+                        for logical_disk in c.Win32_LogicalDisk():
+                            print("LD", logical_disk)
+                            if logical_disk.DeviceID == system_drive_letter:
+                                model = drive.Model
+            except wmi.x_wmi as e:
+                print(f"WMI Error: {e}")
+            except Exception as e:
+                print(f"An unexpected error occurred: {e}")
+
+            if model:
+                for d in c_storage.MSFT_PhysicalDisk():
+                    if model == d.Model:
+                        media_type_code = d.MediaType
+                        info.system_drive_type = disk_types.get(media_type_code, f"Unknown Code ({media_type_code})")
+
+        except Exception as e:
+            print("ERR", e)
+            err = f"Drive Type Query Failed (MSFT_PhysicalDisk): {type(e).__name__}: {e}"
+            print(err); wmi_errors.append(err)
+            # Fallback or set specific error
+            info.system_drive_type = f"Query Failed {permission_error_flag}"
+    elif info.system_drive_type != f"WMI Init Failed {permission_error_flag}" and \
+         info.system_drive_type != "WMI Service Error": # Avoid overwriting previous errors
+        # If storage connection failed earlier, reflect that
+        info.system_drive_type = "WMI Storage Connect Failed"
+
+
     # Store collected WMI errors if any occurred
     if wmi_errors:
-        info.wmi_error_details = "; ".join(wmi_errors)
+        # Append to existing details if WMI init failed earlier
+        existing_details = info.wmi_error_details if info.wmi_error_details else ""
+        new_details = "; ".join(wmi_errors)
+        info.wmi_error_details = f"{existing_details}; {new_details}".strip("; ")
 
 
 def check_pending_updates(info: SystemInfo):
     """ Checks for pending Windows Updates using WUA API. """
     update_status("Checking for pending Windows Updates...")
     info.pending_updates_count = -1 # Default to general error
-    info.update_check_error_details = None # Clear previous errors
+    info.update_check_error_details = None
 
     if not _wuapi_available:
-        # ... (Module missing logic remains the same) ...
         update_status("Windows Update check skipped: pywin32 module missing.")
-        print("Windows Update check skipped: pywin32 module missing (pip install pywin32).")
         info.pending_updates_count = -2
         info.update_check_error_details = "pywin32 module not found"
         return
 
     try:
-        # Create COM objects
         update_session = win32com.client.Dispatch("Microsoft.Update.Session")
         update_searcher = update_session.CreateUpdateSearcher()
-
-        # Search criteria
         search_criteria = "IsInstalled=0 and IsHidden=0 and Type='Software'"
         update_status("Searching for available updates (this may take a moment)...")
         search_result = update_searcher.Search(search_criteria)
@@ -241,13 +374,13 @@ def check_pending_updates(info: SystemInfo):
          err_msg = f"COM Error HRESULT={com_err.hresult}: {com_err}"
          print(f"Windows Update check failed (COM Error): {err_msg}")
          update_status(f"Windows Update check failed (COM Error)")
-         info.pending_updates_count = -3 # Specific code for COM error
+         info.pending_updates_count = -3
          info.update_check_error_details = err_msg
     except Exception as e:
         err_msg = f"{type(e).__name__}: {e}"
         print(f"Windows Update check failed: {err_msg}")
         update_status(f"Windows Update check failed: {e}")
-        info.pending_updates_count = -1 # General error
+        info.pending_updates_count = -1
         info.update_check_error_details = err_msg
 
 def collect_system_data(assessment_id: str) -> SystemInfo:
@@ -256,15 +389,28 @@ def collect_system_data(assessment_id: str) -> SystemInfo:
     info.assessment_id = assessment_id
 
     try:
-        # ... (Basic info, Timestamps, RAM, Disk collection remains the same) ...
         update_status("Collecting basic system info...")
         info.hostname = socket.gethostname()
         info.os_platform = platform.system()
         info.os_version = platform.version()
         info.os_release = platform.release()
         info.architecture = platform.machine()
-        info.processor = platform.processor()
+        info.processor = platform.processor() # Basic processor name
 
+        # CPU Details
+        update_status("Collecting CPU details...")
+        try:
+            info.cpu_physical_cores = psutil.cpu_count(logical=False)
+            info.cpu_logical_cores = psutil.cpu_count(logical=True)
+            cpu_freq = psutil.cpu_freq()
+            # Use max freq if available, otherwise current freq
+            max_freq = cpu_freq.max if cpu_freq.max > 0 else cpu_freq.current
+            info.cpu_max_speed_ghz = round(max_freq / 1000, 2) if max_freq > 0 else 0.0
+        except Exception as e:
+            print(f"CPU detail collection failed: {e}")
+            # Defaults remain 0
+
+        # Timestamps
         current_time_utc = time.time()
         current_datetime_local = time.localtime(current_time_utc)
         timezone_name = time.tzname[current_datetime_local.tm_isdst]
@@ -292,9 +438,8 @@ def collect_system_data(assessment_id: str) -> SystemInfo:
             info.disk_total_gb = -1.0
             info.disk_free_gb = -1.0
 
-
         # --- WMI Dependent Info ---
-        populate_wmi_info(info)
+        populate_wmi_info(info) # Includes RAM Type and Drive Type now
 
         # --- Windows Update Check ---
         check_pending_updates(info)
@@ -337,7 +482,7 @@ def save_data_to_csv(info: SystemInfo):
     try:
         temp_dir = tempfile.gettempdir()
         hostname = info.hostname if info.hostname != "Undetermined" else "unknown"
-        assessment_id_part = info.assessment_id.replace(" ", "_") if info.assessment_id else "no_id"
+        assessment_id_part = info.assessment_id.replace(" ", "_").replace("/", "-").replace("\\", "-") if info.assessment_id else "no_id" # Sanitize ID for filename
         filename = os.path.join(temp_dir, f"readiness_check_{hostname}_{assessment_id_part}_{time.strftime('%Y%m%d_%H%M%S')}.csv")
         update_status(f"Saving data locally to {filename}...")
         fieldnames = sorted(list(data_dict.keys()))
@@ -350,6 +495,7 @@ def save_data_to_csv(info: SystemInfo):
     except Exception as e:
         update_status(f"Error saving data locally: {e}")
         print(f"Failed to save CSV: {e}")
+
 
 # --- Background Task ---
 
@@ -366,17 +512,14 @@ def worker_thread_task(assessment_id: str):
             except Exception as com_init_e:
                 print(f"Failed to CoInitialize COM for thread: {com_init_e}")
                 update_status("Error initializing COM for Update check.")
-                # We might still proceed, but update check will likely fail
 
         system_info = collect_system_data(assessment_id)
 
-        # Check for major collection errors first
         if system_info.collection_error:
              show_final_message("ERROR", f"A critical error occurred during data collection: {system_info.collection_error}\nPlease call us at {SUPPORT_PHONE_NUMBER}.")
              save_data_to_csv(system_info)
-             return # Stop processing
+             return
 
-        # Send data if collection was okay (even if some checks failed)
         success, status_msg, hostname = send_data_to_api(system_info)
 
         if success:
@@ -386,11 +529,10 @@ def worker_thread_task(assessment_id: str):
             save_data_to_csv(system_info)
 
     except Exception as e:
-        # Catch unexpected errors in the thread task itself
         print(f"Critical error in worker thread: {e}")
         update_status(f"Critical error: {e}")
         show_final_message("ERROR", f"A critical error occurred: {e}\nPlease call us at {SUPPORT_PHONE_NUMBER}.")
-        if system_info: save_data_to_csv(system_info) # Save data if available
+        if system_info: save_data_to_csv(system_info)
     finally:
         # --- Uninitialize COM for this thread ---
         if coinitialized and pythoncom:
@@ -398,12 +540,10 @@ def worker_thread_task(assessment_id: str):
                 pythoncom.CoUninitialize()
             except Exception as com_uninit_e:
                 print(f"Failed to CoUninitialize COM for thread: {com_uninit_e}")
-        # Signal GUI that work is done
         gui_queue.put("TASK_COMPLETE")
 
 
 # --- GUI Class ---
-# (App class remains the same as the previous version with the ID prompt)
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -421,7 +561,6 @@ class App(ctk.CTk):
         self.show_splash_screen()
 
     def show_splash_screen(self):
-        # (Splash screen code remains the same as before)
         self.withdraw()
         self.splash = ctk.CTkToplevel(self)
         self.splash.title("Loading...")
