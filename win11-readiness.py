@@ -125,6 +125,20 @@ def populate_wmi_info(info: SystemInfo):
             print(err)
             wmi_errors.append(err)
             info.system_drive_type = f"WMI Storage Connect Failed {permission_error_flag}"
+
+        # Connection for TPM namespace
+        c_tpm = None
+        try:
+            # This namespace might require admin rights
+            c_tpm = wmi.WMI(namespace="root/cimv2/security/microsofttpm")
+            update_status("Connected to WMI TPM namespace.")
+        except Exception as e_storage_con:
+            err = f"WMI TPM Namespace Connect Failed: {type(e_storage_con).__name__}: {e_storage_con}"
+            print(err)
+            wmi_errors.append(err)
+            info.tpm_present = f"WMI TPM Connect Failed {permission_error_flag}"
+            info.tpm_enabled = f"WMI TPM Connect Failed {permission_error_flag}"
+            info.tpm_version = f"WMI TPM Connect Failed {permission_error_flag}"
     except Exception as e:
         error_msg = f"WMI initialization failed: {type(e).__name__}: {e}"
         update_status(error_msg)
@@ -147,7 +161,7 @@ def populate_wmi_info(info: SystemInfo):
     info.tpm_version = "Undetermined"
     info.tpm_enabled = "Undetermined"
     try:
-        tpm_info_list = c.Win32_Tpm()
+        tpm_info_list = c_tpm.Win32_Tpm()
         if tpm_info_list:
             tpm_info = tpm_info_list[0]
             info.tpm_present = True
