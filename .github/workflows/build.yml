@@ -32,7 +32,6 @@ jobs:
           pip install -r requirements.txt
 
       # 4. Build the executable using PyInstaller
-      #    !!! IMPORTANT: Replace 'your_script_name.py' with the actual filename of your Python script !!!
       - name: Build EXE with PyInstaller
         run: |
           pyinstaller --noconfirm --onefile --windowed `
@@ -45,7 +44,7 @@ jobs:
             --add-data "logo.ico;." `
             --manifest "win11-readiness.manifest" `
             --name "Win11ReadinessCheck" `
-            win11-readiness.py # <<<!!! CHANGE THIS FILENAME !!!>>>
+            win11-readiness.py
 
       # 5. Create Release Tag Name
       - name: Create Release Tag Name
